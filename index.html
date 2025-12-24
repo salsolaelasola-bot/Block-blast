@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Block Blast – Global</title>
+
+<style>
+body{
+  margin:0;
+  background:#0b1220;
+  color:#fff;
+  font-family:system-ui,Tahoma;
+}
+.container{
+  max-width:1000px;
+  margin:auto;
+  padding:16px;
+  display:grid;
+  grid-template-columns:1fr 300px;
+  gap:16px;
+}
+.card{
+  background:#121a2b;
+  border-radius:12px;
+  padding:12px;
+}
+canvas{
+  width:100%;
+  background:#071022;
+  border-radius:12px;
+}
+button{
+  width:100%;
+  padding:10px;
+  border-radius:10px;
+  border:none;
+  background:#2a3a66;
+  color:#fff;
+  cursor:pointer;
+}
+#leaderboard div{
+  padding:6px;
+  border-bottom:1px solid #222;
+}
+@media(max-width:900px){
+  .container{grid-template-columns:1fr;}
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+  <div class="card">
+    <h2>Block Blast</h2>
+    <canvas id="board" width="540" height="540"></canvas>
+    <button onclick="newGame()">لعبة جديدة</button>
+  </div>
+
+  <div class="card">
+    <h3 id="player"></h3>
+    <p>Score: <b id="score">0</b></p>
+
+    <h3>🏆 المتصدرون عالميًا</h3>
+    <div id="leaderboard">تحميل...</div>
+  </div>
+</div>
+
+<!-- Firebase -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+
+<script>
+/* ================= Firebase ================= */
+const firebaseConfig = {
+  apiKey: "API_KEY",
+  authDomain: "PROJECT.firebaseapp.com",
+  projectId: "PROJECT_ID",
+};
+
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+/* ================= Player ================= */
+let playerName = localStorage.getItem("player_name");
+
+if(!playerName){
+  playerName = prompt("اكتب اسمك (لا يمكن تغييره):");
+  if(!playerName || playerName.length < 3){
+    alert("اسم غير صالح");
+    location.reload();
+  }
+  localStorage.setItem("player_name", playerName);
+}
+document.getElementById("player").textContent = "👤 " + playerName;
+
+/* ================= Game ================= */
+const N = 9, CELL = 60;
+const board = document.getElementById("board");
+const ctx = board.getContext("2d");
+
+let grid, score, pieces;
+
+const SHAPES = [
+  [[0,0]], [[0,0],[1,0]], [[0,0],[0,1]],
+  [[0,0],[1,0],[2,0]], [[0,0],[0,1],[0,2]],
+  [[0,0],[1,0],[0,1],[1,1]]
+];
+const COLORS = ["#58c7ff","#ff6b6b","#ffd166","#8affc1","#b389ff"];
+
+function newGame(){
+  grid = Array.from({length:N},()=>Array(N).fill(null));
+  score = 0;
+  pieces = randomPieces();
+  saveProgress();
+  draw();
+}
+
+function randomPieces(){
+  return Array.from({length:3},()=>({
+    blocks: SHAPES[Math.floor(Math.random()*SHAPES.length)],
+    color: COLORS[Math.floor(Math.random()*COLORS.length)],
+    used:false
+  }));
+}
+
+function draw(){
+  ctx.clearRect(0,0,540,540);
+  for(let y=0;y<N;y++){
+    for(let x=0;x<N;x++){
+      ctx.strokeStyle="#1e2b4a";
+      ctx.strokeRect(x*CELL,y*CELL,CELL,CELL);
+      if(grid[y][x]){
+        ctx.fillStyle=grid[y][x];
+        ctx.fillRect(x*CELL+4,y*CELL+4,CELL-8,CELL-8);
+      }
+    }
+  }
+  document.getElementById("score").textContent = score;
+}
+
+board.addEventListener("click", e=>{
+  const x = Math.floor(e.offsetX/CELL);
+  const y = Math.floor(e.offsetY/CELL);
+  if(!grid[y][x]){
+    grid[y][x] = COLORS[Math.floor(Math.random()*COLORS.length)];
+    score += 1;
+    clearLines();
+    saveProgress();
+    draw();
+    if(!hasMove()) gameOver();
+  }
+});
+
+function clearLines(){
+  for(let y=0;y<N;y++){
+    if(grid[y].every(v=>v)){
+      grid[y].fill(null);
+      score+=10;
+    }
+  }
+}
+
+function hasMove(){
+  for(let y=0;y<N;y++)
+    for(let x=0;x<N;x++)
+      if(!grid[y][x]) return true;
+  return false;
+}
+
+/* ================= Save / Load ================= */
+function saveProgress(){
+  localStorage.setItem("game_progress", JSON.stringify({grid,score}));
+  db.collection("players").doc(playerName).set({
+    score, grid,
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+  },{merge:true});
+}
+
+function loadProgress(){
+  const s = localStorage.getItem("game_progress");
+  if(s){
+    const d = JSON.parse(s);
+    grid=d.grid; score=d.score;
+  }else newGame();
+}
+
+window.addEventListener("beforeunload", saveProgress);
+
+/* ================= Game Over ================= */
+async function gameOver(){
+  alert("Game Over");
+  const ref = db.collection("leaderboard").doc(playerName);
+  const snap = await ref.get();
+  if(!snap.exists || score > snap.data().best){
+    await ref.set({name:playerName,best:score});
+  }
+  localStorage.removeItem("game_progress");
+  loadLeaderboard();
+}
+
+/* ================= Leaderboard ================= */
+async function loadLeaderboard(){
+  const box=document.getElementById("leaderboard");
+  box.innerHTML="";
+  const snap = await db.collection("leaderboard")
+    .orderBy("best","desc").limit(10).get();
+  snap.forEach((d,i)=>{
+    const v=d.data();
+    box.innerHTML+=`<div>${i+1}. ${v.name} — ${v.best}</div>`;
+  });
+}
+
+/* ================= Start ================= */
+loadProgress();
+draw();
+loadLeaderboard();
+</script>
+
+</body>
+</html>
