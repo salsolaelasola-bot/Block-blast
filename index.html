@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Block Arena (Online)</title>
+<style>
+  body{margin:0;background:#0b1220;color:#e9eefc;font-family:system-ui,Tahoma}
+  .wrap{max-width:1100px;margin:auto;padding:16px;display:grid;grid-template-columns:1fr 320px;gap:16px}
+  .card{background:#121a2b;border-radius:14px;padding:12px;border:1px solid rgba(255,255,255,.08)}
+  h2,h3{margin:6px 0}
+  canvas{background:#071022;border-radius:12px;border:1px solid rgba(255,255,255,.08);touch-action:none}
+  .row{display:flex;gap:8px;flex-wrap:wrap}
+  .pieces{display:flex;gap:10px;margin-top:10px}
+  .mini{background:#071022;border-radius:12px;border:1px solid rgba(255,255,255,.08);padding:6px}
+  .mini canvas{background:transparent;border:0}
+  button{border:0;border-radius:10px;padding:10px 12px;background:#2a3a66;color:#fff;cursor:pointer}
+  #lb div{padding:6px;border-bottom:1px solid rgba(255,255,255,.08)}
+  .muted{color:#9fb0d0;font-size:13px}
+  @media(max-width:900px){.wrap{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="card">
+    <h2>Block Arena</h2>
+    <div class="muted">اسحب القطعة وضعها على الشبكة. تُمسح الصفوف/الأعمدة/مربعات 3×3.</div>
+    <canvas id="board" width="540" height="540"></canvas>
+    <div class="pieces" id="pieces"></div>
+    <div class="row" style="margin-top:10px">
+      <button id="newGame">لعبة جديدة</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 id="player"></h3>
+    <div class="row"><div>Score:</div><b id="score">0</b></div>
+    <hr style="border-color:rgba(255,255,255,.08)">
+    <h3>🏆 المتصدرون عالميًا</h3>
+    <div id="lb" class="muted">تحميل…</div>
+  </div>
+</div>
+
+<!-- Firebase -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<script>
+/* ================= Firebase ================= */
+const firebaseConfig = {
+  apiKey: "API_KEY",
+  authDomain: "PROJECT.firebaseapp.com",
+  projectId: "PROJECT_ID",
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+/* ================= Player (اسم ثابت) ================= */
+let playerName = localStorage.getItem("player_name");
+if(!playerName){
+  playerName = prompt("اكتب اسمك (مرة واحدة فقط):");
+  if(!playerName || playerName.length < 3){ alert("اسم غير صالح"); location.reload(); }
+  localStorage.setItem("player_name", playerName);
+}
+document.getElementById("player").textContent = "👤 " + playerName;
+
+/* ================= Game Core ================= */
+const N=9, CELL=60, GAP=2;
+const COLORS=["#58c7ff","#ff6b6b","#ffd166","#8affc1","#b389ff","#ff9f1c"];
+// أشكال شبيهة بالأصل
+const SHAPES=[
+ [[0,0]],
+ [[0,0],[1,0]], [[0,0],[0,1]],
+ [[0,0],[1,0],[2,0]], [[0,0],[0,1],[0,2]],
+ [[0,0],[1,0],[0,1],[1,1]],
+ [[0,0],[1,0],[2,0],[3,0]], [[0,0],[0,1],[0,2],[0,3]],
+ [[0,0],[1,0],[2,0],[0,1],[1,1],[2,1]],
+ [[0,0],[0,1],[0,2],[1,2]], [[1,0],[1,1],[1,2],[0,2]],
+ [[1,0],[0,1],[1,1],[2,1]],
+ [[0,0],[1,0],[1,1],[2,1]], [[1,0],[2,0],[0,1],[1,1]]
+];
+
+const board=document.getElementById("board");
+const ctx=board.getContext("2d");
+const piecesBox=document.getElementById("pieces");
+const scoreEl=document.getElementById("score");
+const newBtn=document.getElementById("newGame");
+
+let grid, score, pieces, dragging=null;
+
+function makePiece(){
+  const shape=SHAPES[Math.floor(Math.random()*SHAPES.length)];
+  const color=COLORS[Math.floor(Math.random()*COLORS.length)];
+  let minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
+  shape.forEach(([x,y])=>{minX=Math.min(minX,x);minY=Math.min(minY,y);maxX=Math.max(maxX,x);maxY=Math.max(maxY,y);});
+  const blocks=shape.map(([x,y])=>[x-minX,y-minY]);
+  return {blocks,w:maxX-minX+1,h:maxY-minY+1,color,used:false};
+}
+
+function newGame(){
+  grid=Array.from({length:N},()=>Array(N).fill(null));
+  score=0;
+  pieces=[makePiece(),makePiece(),makePiece()];
+  saveProgress();
+  rebuildPieces();
+  draw();
+}
+
+function rebuildPieces(){
+  piecesBox.innerHTML="";
+  pieces.forEach((p,i)=>{
+    const w=document.createElement("div"); w.className="mini";
+    const c=document.createElement("canvas"); c.width=160; c.height=100;
+    w.appendChild(c); piecesBox.appendChild(w);
+    drawMini(c.getContext("2d"),p);
+    w.addEventListener("pointerdown",e=>startDrag(e,i));
+  });
+}
+
+function drawMini(m,p){
+  m.clearRect(0,0,160,100);
+  const s=18;
+  p.blocks.forEach(([x,y])=>{
+    m.fillStyle=p.color;
+    m.fillRect(10+x*s,10+y*s,s-2,s-2);
+  });
+  if(p.used){ m.globalAlpha=.4; m.fillStyle="#000"; m.fillRect(0,0,160,100); m.globalAlpha=1; }
+}
+
+function draw(){
+  ctx.clearRect(0,0,540,540);
+  for(let y=0;y<N;y++)for(let x=0;x<N;x++){
+    ctx.fillStyle="#0a1633";
+    ctx.fillRect(x*CELL+GAP,y*CELL+GAP,CELL-2*GAP,CELL-2*GAP);
+    if(grid[y][x]){
+      ctx.fillStyle=grid[y][x];
+      ctx.fillRect(x*CELL+6,y*CELL+6,CELL-12,CELL-12);
+    }
+  }
+  if(dragging){
+    const {piece,px,py}=dragging;
+    ctx.globalAlpha=.85;
+    piece.blocks.forEach(([bx,by])=>{
+      ctx.fillStyle=piece.color;
+      ctx.fillRect(px+bx*CELL*.65,py+by*CELL*.65,CELL*.6,CELL*.6);
+    });
+    ctx.globalAlpha=1;
+  }
+  scoreEl.textContent=score;
+}
+
+function startDrag(e,idx){
+  const p=pieces[idx]; if(p.used) return;
+  const r=board.getBoundingClientRect();
+  dragging={idx,piece:p,px:e.clientX-r.left-30,py:e.clientY-r.top-30};
+  board.setPointerCapture(e.pointerId);
+  draw();
+}
+
+board.addEventListener("pointermove",e=>{
+  if(!dragging) return;
+  const r=board.getBoundingClientRect();
+  dragging.px=e.clientX-r.left-30;
+  dragging.py=e.clientY-r.top-30;
+  draw();
+});
+
+board.addEventListener("pointerup",e=>{
+  if(!dragging) return;
+  const r=board.getBoundingClientRect();
+  const gx=Math.floor((e.clientX-r.left)/CELL);
+  const gy=Math.floor((e.clientY-r.top)/CELL);
+  const {idx,piece}=dragging; dragging=null;
+  if(canPlace(piece,gx,gy)){
+    place(piece,gx,gy);
+    pieces[idx].used=true;
+    clearAll();
+    if(pieces.every(p=>p.used)) pieces=[makePiece(),makePiece(),makePiece()];
+    rebuildPieces(); saveProgress(); draw();
+    if(!anyMove()) gameOver();
+  } else draw();
+});
+
+function canPlace(p,x,y){
+  if(x<0||y<0||x+p.w>N||y+p.h>N) return false;
+  return p.blocks.every(([bx,by])=>!grid[y+by][x+bx]);
+}
+function place(p,x,y){
+  p.blocks.forEach(([bx,by])=>grid[y+by][x+bx]=p.color);
+  score+=p.blocks.length;
+}
+function clearAll(){
+  let rows=[],cols=[],sqs=[];
+  for(let y=0;y<N;y++) if(grid[y].every(v=>v)) rows.push(y);
+  for(let x=0;x<N;x++){ let ok=true; for(let y=0;y<N;y++) if(!grid[y][x]){ok=false;break;} if(ok) cols.push(x); }
+  for(let sy=0;sy<9;sy+=3)for(let sx=0;sx<9;sx+=3){
+    let ok=true; for(let y=0;y<3;y++)for(let x=0;x<3;x++) if(!grid[sy+y][sx+x]) ok=false;
+    if(ok) sqs.push([sx,sy]);
+  }
+  rows.forEach(y=>{for(let x=0;x<N;x++)grid[y][x]=null;});
+  cols.forEach(x=>{for(let y=0;y<N;y++)grid[y][x]=null;});
+  sqs.forEach(([sx,sy])=>{for(let y=0;y<3;y++)for(let x=0;x<3;x++)grid[sy+y][sx+x]=null;});
+  if(rows.length||cols.length||sqs.length) score+= (rows.length*9 + cols.length*9 + sqs.length*9);
+}
+function anyMove(){
+  const ps=pieces.filter(p=>!p.used);
+  for(const p of ps) for(let y=0;y<=N-p.h;y++) for(let x=0;x<=N-p.w;x++) if(canPlace(p,x,y)) return true;
+  return false;
+}
+
+/* ================= Save / Load ================= */
+function saveProgress(){
+  localStorage.setItem("progress",JSON.stringify({grid,score,pieces}));
+  db.collection("players").doc(playerName).set({
+    score, grid, pieces,
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+  },{merge:true});
+}
+function loadProgress(){
+  const s=localStorage.getItem("progress");
+  if(s){ const d=JSON.parse(s); grid=d.grid; score=d.score; pieces=d.pieces; }
+  else newGame();
+}
+window.addEventListener("beforeunload",saveProgress);
+
+/* ================= Game Over + Leaderboard ================= */
+async function gameOver(){
+  alert("Game Over");
+  const ref=db.collection("leaderboard").doc(playerName);
+  const snap=await ref.get();
+  if(!snap.exists || score>snap.data().best){
+    await ref.set({name:playerName,best:score,at:firebase.firestore.FieldValue.serverTimestamp()});
+  }
+  localStorage.removeItem("progress");
+  loadLeaderboard();
+}
+async function loadLeaderboard(){
+  const lb=document.getElementById("lb"); lb.innerHTML="";
+  const snap=await db.collection("leaderboard").orderBy("best","desc").limit(10).get();
+  snap.forEach((d,i)=>{ const v=d.data(); lb.innerHTML+=`<div>${i+1}. ${v.name} — ${v.best}</div>`; });
+}
+
+/* ================= Start ================= */
+newBtn.onclick=()=>{ localStorage.removeItem("progress"); newGame(); };
+loadProgress(); rebuildPieces(); draw(); loadLeaderboard();
+</script>
+</body>
+</html>
